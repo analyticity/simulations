@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-A macroscopic transport simulation pipeline for Czech cities (diploma thesis, Brno University of Technology, FIT). Built on **AequilibraE** (static user-equilibrium traffic assignment) with automated data acquisition from OpenStreetMap, Czech Statistical Office (SLDB 2021), Road and Motorway Directorate (CSD 2025), and NDIC/Police ČR closure feeds. Python backend (`src/sim/`) + a React/TypeScript frontend (`frontend/`, a **git submodule** pointing at `analyticity/web`, branch `feat/simulation`) that renders maps/reports from the API.
+A macroscopic transport simulation pipeline for Czech cities (diploma thesis, Brno University of Technology, FIT). Built on **AequilibraE** (static user-equilibrium traffic assignment) with automated data acquisition from OpenStreetMap, Czech Statistical Office (SLDB 2021), Road and Motorway Directorate (CSD 2025), and NDIC/Police ČR closure feeds. Python backend (`src/sim/`) + a React/TypeScript frontend (`frontend/`, a **git submodule** pointing at `analyticity/web`, branch `main`; the simulation pages are under `/simulation`) that renders maps/reports from the API.
 
 ## Commands
 
@@ -110,5 +110,5 @@ Multi-stage `Dockerfile` builds a pipeline stage plus a `serve` stage with baked
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SIM_CONFIG` | `config/brno/sim.yaml` | Config path when running uvicorn directly |
-| `VITE_API_URL` | `http://localhost:8000` | Backend URL for the frontend |
+| `VITE_SIM_API_URL` | — | Simulation API URL for the frontend (e.g. `http://localhost:8000`); without it the Simulation menu is hidden |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:5173` | Allowed origins for API CORS |

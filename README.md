@@ -112,7 +112,7 @@ npm install
 npm run dev        # http://localhost:5173
 ```
 
-The frontend connects to the backend API at `http://localhost:8000` by default (override with `VITE_API_URL`).
+The frontend is the Analyticity web app; the simulation is under <http://localhost:5173/simulation>. Point it at the API with `VITE_SIM_API_URL=http://localhost:8000` in `frontend/.env` – without it the Simulation menu is hidden. The API must allow the frontend origin (`CORS_ALLOWED_ORIGINS`, default `http://localhost:5173`).
 
 ## Running the Pipeline
 
@@ -260,7 +260,7 @@ CI runs unit tests on Python 3.11 and 3.12 on every push; integration tests run 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SIM_CONFIG` | `config/brno/sim.yaml` | Config path when running uvicorn directly |
-| `VITE_API_URL` | `http://localhost:8000` | Backend URL for the frontend |
+| `VITE_SIM_API_URL` | — | Simulation API URL for the frontend (e.g. `http://localhost:8000`); without it the Simulation menu is hidden |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:5173` | Allowed origins for API CORS |
 
 ## License

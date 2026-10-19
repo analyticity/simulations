@@ -16,15 +16,77 @@ supernetwork:
 
 osm:
   place_name: "Brno, Czechia"
+  # overpass-api.de má dva A záznamy a opakovane sa stáva, že jeden z nich
+  # odmieta spojenie (build padne na `[Errno 111] Connection refused`).
+  # AequilibraE ho navyše volá cez plain HTTP (parameters.yml), takže
+  # `docker build --add-host` na jeden port nestačí. Endpoint sa preto dá
+  # prepnúť tu alebo premennou OVERPASS_ENDPOINT, ktorá má prednosť:
+  #
+  #     OVERPASS_ENDPOINT=https://maps.mail.ru/osm/tools/overpass/api
+  #
+  # POZOR pri výbere mirrorov — overené 20. 8. 2026:
+  #   maps.mail.ru ....... má české dáta, ale na hromadné dotazy je príliš
+  #                        pomalý (osmnx dotaz na okres nedobehol do 10 min)
+  #   overpass.osm.ch .... odpovedá rýchlo, ale obsahuje LEN švajčiarske dáta
+  #                        — dotaz prejde a vráti 0 featurov, čo je horšie než
+  #                        chyba, lebo to vyzerá ako prázdna oblasť
+  #   kumi.systems, private.coffee ... vracali 502 / timeout
+  # Preto tu ostáva upstream; prepínaj len vedome a výsledok si skontroluj.
+  overpass_endpoint: "https://overpass-api.de/api"
 
 network:
   normalization_config: "config/brno/network_normalization.yaml"
 
+assignment:
+  # Jedno vlákno = deterministické poradie sčítania float čísel. Pri `cores: 0`
+  # (všetky jadrá) sa dva behy s identickým vstupom líšili na holdout R² o 0.010
+  # a objemy na jednotlivých linkoch o jednotky percent. Priradenie trvá ~1-2 s,
+  # takže réžia je zanedbateľná a reprodukovateľnosť za to stojí.
+  cores: 1
+
+  # Warm skimy sa zbiehali na rgap 0.0079 (default cieľ 0.02), takže každý beh
+  # dal mierne iné cestovné časy -> iná beta v `distribute` -> iný seed -> iná
+  # trajektória ODME. Zmerané: dva behy s IDENTICKÝM configom dali holdout
+  # R² 0.724 a 0.560. Beh je krátky (6 iterácií), tak si prísnejší cieľ môžeme
+  # dovoliť a je to podmienka reprodukovateľnosti.
+  warm_skim_pass:
+    max_iter: 200
+    rgap_target: 0.0005
+  bpr:
+    # Denný kapacitný faktor prepočítava hodinovú kapacitu na dennú. Defaulty
+    # dávajú vedľajším uliciam skoro to isté čo arteriálam (tertiary 11 proti
+    # motorway 13), takže obslužná ulica "unesie" za deň takmer toľko čo
+    # diaľnica a priradenie dopravu rozteká do bočných ulíc. To je presne obraz,
+    # ktorý dáva sklon < 1: model podstreľuje veľké úseky a nadstreľuje malé.
+    #
+    # Špičkovanie je na vedľajšej sieti výrazne plochejšie než na diaľnici, čo
+    # zodpovedá nižšiemu faktoru.
+    daily_capacity_factor:
+      by_link_type:
+        tertiary: 8.0
+        tertiary_link: 7.0
+        residential: 6.0
+        unclassified: 8.0
+        service: 4.0
+        living_street: 4.0
+
 zoning:
+  # Zóny sa sťahujú z Overpassu; s cache sa to spraví raz a ďalšie behy
+  # build-zones sú offline a reprodukovateľné. Zmazať pri zmene `sources`.
+  cache_file: "data/brno/cache/zones_osm.gpkg"
   sources:
-    - type: osm
-      place: "Okres Brno-město, Czechia"
-      admin_level: "9"
+    # Mestské časti NEČÍTAME cez osmnx. features_from_place() z 29 relácií vráti
+    # len 26 — bez varovania vypadne Brno-střed, Brno-Komín a Brno-Chrlice, hoci
+    # v OSM majú identické tagy ako zvyšok (type=boundary, place=borough,
+    # admin_level=9). Overené na osmnx 2.1.1 tromi variantmi dotazu (okres, mesto,
+    # 20x max_query_area_size) — všetky tri vrátia tých istých 26. Brno-střed je
+    # najväčší cieľ ciest v modeli, takže tá diera skresľovala všetky radiály.
+    # GeoJSON ťahá scripts/fetch_zone_boundaries.py priamo z Overpassu
+    # (29 hraníc, spolu 230,2 km² = presná rozloha Brna).
+    - type: file
+      path: "config/brno/zones_admin9.geojson"
+      id_column: "zone_id"
+      name_column: "name"
     - type: osm
       place: "Okres Brno-venkov, Czechia"
       admin_level: "9"
@@ -48,17 +110,26 @@ zoning:
       # Main D2 carriageway (~49.124°N); default snap lands on low-flow spur near boundary.
       - ref: "D2"
         anchor_latlon: [49.123847, 16.644072]
-      - "I/43"
+      # I/43 sa pri Českej (~49.2865°N) v OSM reálne zužuje z `trunk` 2+2 na
+      # `primary` 1+1 (kapacita 3600 -> 1400/pruh). Bez kotvy brána sadne na ten
+      # úzky úsek (uzly 15858/15859, 818 a 5 752 voz/deň) a celý externý dopyt
+      # sa cez neho nepretlačí — modelovaných 15 118 voz/deň proti 40 582 z CSD.
+      # Kotva na 2+2 úseku južne od zúženia.
+      - ref: "I/43"
+        anchor_latlon: [49.282600, 16.567400]
       # I/52 anchor at ~49.123°N between NB node 158734 and SB node 158735;
       # north of the trunk_link 1147 ramp at node 13769 that bypassed the screenline filter.
       - ref: "I/52"
         anchor_latlon: [49.122980, 16.604120]
       # --- P0-1: radiály, ktoré prekračujú hranicu Brna a doteraz nemali bránu.
-      # AADT na hranici okresu Brno-město / Brno-venkov podľa CSD 2025 (v2):
+      # AADT na hranici okresu Brno-město / Brno-venkov podľa CSD 2025 (v2).
+      # POZOR na formát: road_ref_token_variants() rozširuje na holé číslo iba
+      # prefixy I/ a D/ (I/50 -> {I50, 50, D50}). Cesty II. a III. triedy sa
+      # preto píšu holým číslom tak, ako ich má OSM v tagu `ref`.
       - "I/50"      # východ (Slatina → Šlapanice), 24 271 voz/deň
-      - "II/602"    # západ (Bosonohy → Troubsko), 18 523
-      - "II/380"    # juhovýchod (Tuřany → Sokolnice), 12 348
-      - "II/430"    # východ (Slatina → Šlapanice), 10 115
+      - "602"       # II/602, západ (Bosonohy → Troubsko), 18 523
+      - "380"       # II/380, juhovýchod (Tuřany → Sokolnice), 12 348
+      - "430"       # II/430, východ (Slatina → Šlapanice), 10 115
       # Ďalšie kandidátky (III. trieda, vyžadujú aj `tertiary` v allowed_link_types):
       #   6401  sever, 10 998   |   15286  Šlapanice, 9 977
     auto_discover:
@@ -67,16 +138,83 @@ zoning:
 demand:
   segments:
     external_local:
-      # Odvodené z kamdojizdime.cz (MV ČR), stĺpec pocet_osob_pd (Po–Pá 6–18 h),
-      # priemer 4 sezón 2021–2023, typy T2 + T3 + N pri MINIMÁLNEJ frekvencii
-      # pobytov podľa metodiky INTENS (T2 >=4, T3 >=2, N >=1 pobyt / 28 dní).
-      # Konverzia osoby -> vozidlá: car_share 0.48, occupancy 1.20, 2 cesty/deň.
-      # Je to DOLNÁ HRANICA, nie bodový odhad — skutočná frekvencia je vyššia.
-      # Predchádzajúca hodnota 130000 bola odhad bez opory v dátach.
-      total_daily_trips: 35334
+      # Základ: kamdojizdime.cz (MV ČR), stĺpec pocet_osob_pd (Po–Pá 6–18 h),
+      # priemer 4 sezón 2021–2023, typy T2 + T3 + N. Konverzia osoby -> vozidlá:
+      # car_share 0.48, occupancy 1.20, 2 cesty/deň.
+      #
+      # 35 334 zodpovedá MINIMÁLNEJ frekvencii pobytov podľa metodiky INTENS
+      # (T2 >=4, T3 >=2, N >=1 pobyt / 28 dní) — je to dolná hranica, nie odhad.
+      #
+      # 110 000 pochádza zo sweepu (scripts/sweep_demand.py) na opravenom modeli
+      # (29 mestských častí, zamestnanosť miest, váhy brán z kamdojizdime) a je
+      # to prvá hodnota, ktorá prekonáva pôvodný model vo VŠETKÝCH štyroch
+      # holdout metrikách naraz:
+      #   R² 0.777 (base 0.627) | sklon 1.005 (0.744)
+      #   %RMSE 36.4 (47.0)     | bias 9.3 % (11.8 %)
+      # Sklon 1.005 je prakticky presný — celkový objem dopytu sedí.
+      #
+      # Rozhodla až tretia úroveň porovnania z KAMDOJIZDIME_PLAN.md, teda o koľko
+      # musí ODME maticu pokriviť (seed_deviation v calibration_report.json):
+      #   110 000 -> drift -12,0 %, 0 buniek nad 4x prahom, max pomer 3.92
+      #    90 000 -> drift -28,1 %, 461 buniek nad prahom, max pomer 8.69
+      # Lepší holdout teda nie je vyrobený kalibráciou, ale lepším vstupom.
+      # (Staršie sweepy dávali iné čísla — bežali s poškodenou seed zálohou,
+      # viď commit 6920636. Porovnateľné sú až behy po ňom.)
+      #
+      # Zostáva výhrada: pri tejto hodnote ODME maticu takmer nemení, takže sa
+      # zviditeľnila chyba v rozdelení medzi brány, ktorú predtým prekrývala —
+      # D1_E má pomer 0.62, 602_W 0.64. Ladiť treba corridor_weights nižšie,
+      # nie tento objem.
+      total_daily_trips: 110000
+      # Rozdelenie medzi brány. BEZ tohto kľúča ho _normalize_named_weights()
+      # odvodí z triedy cesty (_LINK_TYPE_WEIGHT_SCALE: motorway 1.0, trunk 0.9,
+      # primary 0.7, secondary 0.4), čo je jediná informácia o veľkosti koridoru,
+      # ktorú model inak má — a je hrubá: I43_N tak dostávala 12,1 % dopytu proti
+      # reálnym 8,2 % (model/CSD = 1.38), zatiaľ čo D1_E a I52_S dostávali menej,
+      # než im patrí (0.69 a 0.65).
+      #
+      # Váhy nižšie sú z kamdojizdime (T2+T3+N, pocet_osob_pd, priemer 4 sezón),
+      # rozpočítané na brány cez external_gateway_lookup.parquet váhami podľa
+      # inverznej cesty. Odvodenie: scripts/kamdojizdime_gateway_weights.py
+      #
+      # Prečo nie z CSD: `external_local` je NEDOCHÁDZKOVÁ externá vrstva, kým
+      # CSD sčítanie je všetky vozidlá vrátane tranzitu, takže podiel diaľnic je
+      # v ňom nafúknutý. Oba zdroje sa na diaľničných bránach zhodujú do 1–3 p.b.,
+      # ale na cestách II. triedy do blízkych obcí dáva kamdojizdime dvoj- až
+      # trojnásobok (602_W 15,2 % proti 6,3 %; 430_E 10,0 % proti 4,7 %) — a to je
+      # vecne správne, služby a návštevy chodia práve tadiaľ. Druhý dôvod: CSD
+      # čísla používajú gateway screenliny na validáciu, takže vážiť nimi seed by
+      # znamenalo ladiť model na tie isté dáta, proti ktorým sa meria.
+      #
+      # Výhrady: napárovalo sa 87,3 % objemu (zvyšné obce nie sú v lookupe) a
+      # ~63 % relácií je pod prahom anonymizácie 7 osôb. 380_SE s 1,4 % je
+      # najpodozrivejšia hodnota — ak model na 380 začne podstreľovať, začni tam.
+      corridor_weights:
+        D1_W: 0.1829
+        D1_E: 0.1772
+        I52_S: 0.1658
+        602_W: 0.1524
+        D2_S: 0.1368
+        430_E: 0.1004
+        I43_N: 0.0704
+        380_SE: 0.0140
   sldb:
     external_processing:
       through_traffic_scale: 0.30
+  distribution:
+    # P0-3 / nález č. 1 z pipeline_detail.md: segment `other` sa modeloval
+    # dvakrát. build-demand ho vyrobí s trip_rate 1.0 / car_share 0.35 /
+    # occupancy 1.50 = 0,233 cesty na obyvateľa, a `distribute` mu potom vnúti
+    # okraje z pa_* (1.8 / 0.40 / 1.3 = 0,554), teda 2,37x viac. Po blende
+    # 55/45 z toho vyšiel seed 645 963 namiesto 559 939 z build-demand.
+    #
+    # ODME potom musela ten prebytok odobrať — drift -30 %. Zjednotenie oboch
+    # sád znamená, že distribúcia určuje TVAR matice (cez zamestnanosť), nie
+    # jej ÚROVEŇ. Atrakcie sa aj tak preškálujú na súčet produkcií, takže
+    # priestorová štruktúra zostáva nedotknutá; mení sa len mierka.
+    pa_trip_rate: 1.0
+    pa_car_share: 0.35
+    pa_occupancy: 1.50
 
 calibration:
   gateway_calibration:
@@ -85,8 +223,12 @@ calibration:
     max_factor: 1.20
   auto_screenlines:
     gateway_count_target: "motor_total"
+  # Experiment C: ODME smie prepísať celkový dopyt najviac o ±15 %. Bez toho
+  # uberala ~30 % bez ohľadu na štart (seed 646k -> 451k aj 560k -> 402k),
+  # pritom model sčítané úseky podstreľoval o 19 %.
+  max_total_drift_pct: 15.0
   odme:
-    max_outer_iterations: 48
+    max_outer_iterations: 4
     entropy_step_size: 0.15
     convergence_tol: 0.0008
     stall_patience: 20
@@ -95,9 +237,7 @@ calibration:
     assign_rgap_target: 0.004
     stages:
       - name: "stabilize"
-        max_iterations: 20
-      - name: "refine"
-        max_iterations: 35
+        max_iterations: 4
   screenlines_path: "config/brno/screenlines.yaml"
   matching:
     require_csd_road_ref_match: true
@@ -113,6 +253,54 @@ calibration:
 
 datasets:
   enabled: true
+  # Waze/NDIC dáta sa čítajú z CSV dumpov, nie zo živého Postgresu. Sú to
+  # dumpy tých istých tabuliek (`COPY ... TO CSV`), takže fetchery z nich
+  # postavia rovnaké parquety ako zo SQL — viď src/sim/datasets/csv_source.py.
+  #
+  # Dôvody: (1) DB je na dexteri za Docker-internou adresou a z kontajnera
+  # nie je dostupná vôbec, (2) dumpy sú zamrazený stav, takže vyhodnotenie
+  # je reprodukovateľné — DB sa dopĺňa ďalej a to isté query o mesiac vráti
+  # iné čísla.
+  #
+  # Očakávané názvy súborov = názvy tabuliek: jams.csv, road_segments.csv,
+  # restrictions.csv, event_links.csv. Jednotlivo sa dá prebiť `csv_path`
+  # na konkrétnom zdroji. Zmazať kľúč = návrat na Postgres.
+  #
+  # Rozsah dumpu (28. 8. 2026): jamy 2026-04-14 .. 2026-08-28 (283 869 riadkov,
+  # 8 469 segmentov), restrictions 1 504 (z toho 122 NDIC), event_links 103 616.
+  csv_dir: "data/data_vyhodnotenie_brno"
+  employment:
+    # Zamestnanosť sa odvádza z cieľov dochádzky SLDB, ktoré sú po obciach, takže
+    # celé Brno má jeden riadok ("BRNO") a medzi 29 mestských častí sa musí
+    # rozpustiť. Bez tohto kľúča sa delí podľa počtu obyvateľov, čo dáva prácu
+    # tam, kde sa spí — centrum by dostalo 17,8 % pracovných miest mesta.
+    #
+    # Súbor je počet pracovísk v OSM (office + shop + zamestnávajúce amenity) na
+    # mestskú časť, generuje ho scripts/zone_workplace_weights.py. Centrum tak
+    # vychádza na 42,1 %, Královo Pole 11,9 %, Brno-sever 9,1 %.
+    #
+    # Súbor je počet pracovísk v OSM (office + shop + zamestnávajúce amenity) na
+    # mestskú časť, generuje ho scripts/zone_workplace_weights.py. Centrum tak
+    # dostane 42,1 % pracovných miest mesta namiesto 17,8 %, ktoré mu dáva
+    # populácia — tá dáva prácu tam, kde sa spí.
+    #
+    # Zmerané A/B, celý reťazec build-demand -> validate, jeden kontajner,
+    # menil sa len tento kľúč:
+    #                     populačný   POI
+    #   holdout R²           0.655    0.685
+    #   holdout sklon        0.715    0.794
+    #   holdout %RMSE         45.3     43.3
+    #   holdout bias          21.0     18.6
+    #   drift od seedu      -31.6 %  -30.1 %   (516 vs 425 buniek nad prahom)
+    #   screenline max        50.6     67.9
+    # POI vyhráva na holdoute aj na drifte; horší screenline je zvyšná chyba
+    # v rozdelení medzi brány, ktorú rieši corridor_weights vyššie.
+    #
+    # VÝHRADA: počet POI berie továreň a kaderníctvo rovnako, takže priemyselné
+    # časti sú podhodnotené — Brno-jih má 284 ha priemyslu, ale len 4,4 %
+    # pracovísk, Brno-Černovice 159 ha a 1,6 %. Ak model tie dve podstreľuje,
+    # začni tu.
+    city_split_weights: "config/brno/zone_employment_weights.json"
   sources:
     commuting_sldb2021:
       filter:

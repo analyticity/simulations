@@ -31,6 +31,7 @@ from sim.demand.seeds import (
 )
 from sim.demand.od_builder import _build_od_cores
 from sim.demand.aem_io import _ensure_dir, _register_in_project, _write_aem
+from sim.distribution.impedance import _load_zone_employment
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +123,38 @@ def load_or_build_od_matrix(config_path: str | Path = "config/brno/sim.yaml", cf
     if groups:
         for group_name, members in groups.items():
             logger.debug("Group %r: %d zones", group_name, len(members))
+
+    # The core city is one place in the census, so both ends of its trips have
+    # to be split among its zones.  Home ends follow population; work and
+    # school ends follow employment, which otherwise lands where people sleep.
+    groups_work = groups
+    hub_dest_weights = str(hub_cfg.get("destination_weights", "employment")).strip().lower()
+    if not groups:
+        hub_dest_weights = "none"
+    elif hub_dest_weights == "employment":
+        zone_employment = _load_zone_employment(
+            Path(cfg.get("datasets", {}).get("cache_dir", "data/cache"))
+        )
+        if zone_employment:
+            groups_work = _build_hub_group(
+                zones_gdf,
+                primary,
+                stripped,
+                csv_places,
+                hub_name=hub_name,
+                hub_source_rank=hub_source_rank,
+                zone_population=zone_employment,
+                weight_label="employment",
+            ) or groups
+        else:
+            hub_dest_weights = "population"
+            logger.warning(
+                "demand.hub_group.destination_weights=employment but "
+                "zone_employment.parquet is missing -- work ends of the core "
+                "city follow population. Run fetch-data after build-zones."
+            )
+    else:
+        hub_dest_weights = "population"
     _mark("build_hub_groups")
 
     gateways = _load_gateways(zones_gdf)
@@ -163,6 +196,7 @@ def load_or_build_od_matrix(config_path: str | Path = "config/brno/sim.yaml", cf
         gateways=gateways,
         external_lookup=external_lookup,
         external_lookup_out=external_lookup_out,
+        groups_work=groups_work,
     )
     _mark("build_commuting_cores")
 
@@ -350,6 +384,19 @@ def load_or_build_od_matrix(config_path: str | Path = "config/brno/sim.yaml", cf
 
     logger.info("Writing AEM matrix: %s", bcfg.matrix_path)
     _write_aem(bcfg.matrix_path, centroid_ids, all_cores, matrix_name=bcfg.matrix_name)
+
+    # Seed reference for ODME's drift report.  Anchored here because this is a
+    # moment the matrix is provably uncalibrated; when distribution runs it
+    # moves the reference forward to its own output, which is the real
+    # uncalibrated demand.  Calibration used to refresh .aem.orig whenever the
+    # working matrix differed from it — which is exactly what its own previous run
+    # caused — so the "seed" silently became the last calibrated matrix and
+    # prior_drift_pct measured zero by construction.
+    import shutil as _shutil
+
+    _seed_backup = Path(bcfg.matrix_path).with_suffix(".aem.orig")
+    _shutil.copy2(bcfg.matrix_path, _seed_backup)
+    logger.info("Seed matrix reference: %s", _seed_backup)
     _mark("write_aem_matrix")
 
     _ensure_dir(bcfg.output_dir)
@@ -375,6 +422,8 @@ def load_or_build_od_matrix(config_path: str | Path = "config/brno/sim.yaml", cf
                 "trips_per_person": bcfg.conv_school.trips_per_person,
             },
         },
+        "include_lokalizace": bcfg.include_lokalizace,
+        "hub_destination_weights": hub_dest_weights,
         "periods": bcfg.periods,
         "segments": segment_totals,
         "groups": {k: {"zones": len(v)} for k, v in groups.items()},

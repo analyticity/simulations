@@ -127,6 +127,28 @@ SIM_DEFAULTS: Dict[str, Any] = {
         "cores": 0,
         "blocked_centroid_flows": True,
 
+        # What a scenario is compared against.
+        #   "null_run" – re-solve the untouched network through the same code
+        #                path and the same settings as the scenario, then diff.
+        #   "stored"   – diff against assignment_results.parquet from `assign`.
+        #
+        # "stored" was the historical behaviour and it compares two *different*
+        # runs, so the gap between two approximations of the same equilibrium
+        # leaks into the result.  Measured on Brno v6: closing one link with
+        # zero traffic still moved 753 links by >500 veh/day (sum |delta| =
+        # 1.30M) and changed VHT by -1 424 veh*h — a larger effect than closing
+        # a real arterial.  Keep "null_run" unless reproducing an older run.
+        "scenario_baseline": "null_run",
+
+        # Residual noise after the null-run fix is BFW path-dependence and
+        # scales with this tolerance.  Tighten (e.g. 1e-4) when a scenario
+        # effect is small, and verify with a placebo scenario — close a link
+        # carrying no traffic and check that sum |delta| collapses toward zero.
+        # Left at the calibration tolerance by default so run times do not
+        # change silently; see plan_vyhodnotenia.md, step E1.
+        # "scenario_rgap": 0.002,
+        # "scenario_max_iter": 200,
+
         "warm_skim_pass": {
             "algorithm": "bfw",
             "max_iter": 80,
@@ -205,8 +227,22 @@ SIM_DEFAULTS: Dict[str, Any] = {
         "matrix_name": "demand",
         "od_global_scale": 1.0,
 
+        # The core city is a single place in the census; its trip ends are split
+        # among its zones by population at home and, with "employment", by
+        # zone employment (zone_employment.parquet) at work or school.
+        "hub_group": {
+            "destination_weights": "employment",
+        },
+
         "sldb": {
-            "include_lokalizace": ["0_na_adrese_OP", "1_meziobecni"],
+            # SLDB 2021 workplace location (``lokalizace``): 0 = at the home
+            # address (works at home, no daily commute), 1 = another
+            # municipality, 2 = abroad, 3 = within the home municipality,
+            # 4 = no fixed workplace, 99 = unknown.  Commuting is 1 and 3.
+            # Category 0 used to stand in for 3, which put Brno's 39 537 home
+            # workers into the matrix instead of its 176 890 intra-city
+            # commuters.
+            "include_lokalizace": ["1_meziobecni", "3_v_ramci_obce"],
             "only_internal_pairs": False,
             "external_processing": {
                 "enabled": True,
@@ -349,6 +385,15 @@ SIM_DEFAULTS: Dict[str, Any] = {
 
         "max_iterations": 50,
         "reset_matrix_before_run": True,
+
+        # Cumulative cap on how far ODME may rewrite the TOTAL demand, in % of
+        # the seed.  Per-cell elasticity (max_deviation) and the per-iteration
+        # cap (max_iter_change_pct) both existed; the total was unconstrained,
+        # so the loop could walk demand down ~0.4%/iteration indefinitely --
+        # removing exactly the demand that crosses no count post, which costs
+        # nothing in the objective.  0 disables the guard (historical
+        # behaviour).  See plan_vyhodnotenia.md, experiment C.
+        "max_total_drift_pct": 0.0,
 
         "convergence": {
             "geh_lt5_target_pct": 85.0,

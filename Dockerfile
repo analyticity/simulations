@@ -11,8 +11,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         git \
     && rm -rf /var/lib/apt/lists/*
 
+COPY --from=ghcr.io/astral-sh/uv:0.12.21 /uv /usr/local/bin/uv
+
 WORKDIR /app
-COPY pyproject.toml ./
+COPY pyproject.toml uv.lock ./
 COPY src/ src/
 COPY run.py ./
 COPY config/ config/
@@ -20,7 +22,10 @@ COPY scripts/ scripts/
 COPY scenarios/ scenarios/
 COPY experiments/ experiments/
 
-RUN pip install --no-cache-dir -e ".[geo]"
+# Exact versions from uv.lock, so every image build gets the same dependencies.
+RUN uv export --frozen --no-dev --extra geo --no-emit-project -o /tmp/requirements.lock \
+    && uv pip install --system --no-cache -r /tmp/requirements.lock \
+    && uv pip install --system --no-cache --no-deps -e .
 
 # ---- Stage 2: Run the pipeline to bake data into the image ----
 FROM base AS pipeline

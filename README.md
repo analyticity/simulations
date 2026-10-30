@@ -98,6 +98,8 @@ pip install -e ".[dev]"
 pip install -e ".[dev,geo]"
 ```
 
+`uv.lock` pins the exact versions that the Docker image and CI install. With [uv](https://docs.astral.sh/uv/), `uv sync --extra dev --extra geo` gives the same environment locally. After changing dependencies in `pyproject.toml`, run `uv lock` and commit `uv.lock`.
+
 Verify with:
 
 ```bash

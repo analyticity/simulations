@@ -50,7 +50,7 @@ jobs:
       - name: Restore data sources cache
         if: steps.guard.outputs.skip == 'false'
         id: sources-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: data/sources
           key: data-sources-v1

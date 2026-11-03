@@ -151,7 +151,7 @@ jobs:
 
       - name: Upload pipeline reports
         if: steps.guard.outputs.skip == 'false'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: reports-${{ matrix.city }}
           path: reports-${{ matrix.city }}/
@@ -159,7 +159,7 @@ jobs:
 
       - name: Upload experiment results
         if: steps.guard.outputs.skip == 'false'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: experiments-${{ matrix.city }}
           path: experiments-${{ matrix.city }}/
